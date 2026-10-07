@@ -71,7 +71,6 @@ def scrape_swim_england_pbs(url):
         
         all_swims = []
         
-        # Scan all tables on the page to find the specific Summary Table
         for table in soup.find_all('table'):
             sc_idx = -1
             lc_idx = -1
@@ -80,18 +79,15 @@ def scrape_swim_england_pbs(url):
                 cells = [td.get_text(strip=True) for td in tr.find_all(['td', 'th'])]
                 if not cells: continue
                 
-                # 1. Identify the correct columns from the header row
                 if sc_idx == -1:
                     for i, c in enumerate(cells):
                         c_lower = c.lower()
                         if "short course pb" in c_lower: sc_idx = i
                         elif "long course pb" in c_lower: lc_idx = i
-                    continue # Move to the next row once headers are mapped
+                    continue 
                 
-                # If we are in a table that doesn't have these columns, break out and check the next table
                 if sc_idx == -1 or lc_idx == -1: break
                 
-                # 2. Extract the Data
                 event_name = cells[0]
                 if not re.search(r'\d+m\s+[A-Za-z]+', event_name, re.IGNORECASE):
                     continue
@@ -99,20 +95,16 @@ def scrape_swim_england_pbs(url):
                 clean_evt = extract_standard_event(event_name)
                 if not clean_evt: continue
                 
-                # Make sure the row has enough columns
                 if len(cells) > max(sc_idx, lc_idx):
                     sc_time = cells[sc_idx]
                     lc_time = cells[lc_idx]
                     
-                    # Add Short Course (25m) PB if it isn't a dot
                     if sc_time and sc_time != '.':
                         all_swims.append({"Event": clean_evt, "Course": "25m", "Time": sc_time})
                         
-                    # Add Long Course (50m) PB if it isn't a dot
                     if lc_time and lc_time != '.':
                         all_swims.append({"Event": clean_evt, "Course": "50m", "Time": lc_time})
             
-            # If we successfully parsed the summary table, stop looking at other tables
             if sc_idx != -1: break
             
         return pd.DataFrame(all_swims)
@@ -174,16 +166,19 @@ for _, row in view_df.iterrows():
     status_class = ""
     status_badge = "Keep Pushing!"
     
-    # Check targets if available
     if has_targets:
         match = target_df[(target_df["Gender"] == "F") & (target_df["Age"] == current_age) & (target_df["Event"].str.lower() == evt.lower())]
         if not match.empty:
-            c_str = str(match.iloc[0].get("County_Time", "N/A"))
-            r_str = str(match.iloc[0].get("Regional_Time", "N/A"))
+            c_val = match.iloc[0].get("County_Time")
+            r_val = match.iloc[0].get("Regional_Time")
+            
+            # Clean up Pandas NaN values so they display as N/A
+            c_str = str(c_val) if pd.notna(c_val) and str(c_val).lower() != "nan" else "N/A"
+            r_str = str(r_val) if pd.notna(r_val) and str(r_val).lower() != "nan" else "N/A"
+            
             c_sec = time_to_seconds(c_str)
             r_sec = time_to_seconds(r_str)
             
-            # Determine qualification status
             if r_sec and pb_sec and pb_sec <= r_sec:
                 status_class = "qualified-regional"
                 status_badge = "🏆 REGIONAL QUALIFIER"
@@ -191,7 +186,6 @@ for _, row in view_df.iterrows():
                 status_class = "qualified-county"
                 status_badge = "🌟 COUNTY QUALIFIER"
 
-    # Calculate differences
     def get_gap_html(pb, target):
         if not pb or not target: return ""
         diff = pb - target
@@ -200,30 +194,13 @@ for _, row in view_df.iterrows():
 
     c_gap = get_gap_html(pb_sec, c_sec)
     r_gap = get_gap_html(pb_sec, r_sec)
-
     badge_html = f"<span class='badge {'achieved' if status_class else ''}'>{status_badge}</span>"
 
-    st.markdown(f"""
-    <div class="pb-card {status_class}">
-        <div class="evt-title">
-            <span>{evt}</span>
-            {badge_html}
-        </div>
-        <div class="grid">
-            <div class="box">
-                <div class="box-label">Current PB</div>
-                <div class="box-val time-pb">{pb_str}</div>
-            </div>
-            <div class="box">
-                <div class="box-label">County Target</div>
-                <div class="box-val">{c_str}</div>
-                {c_gap}
-            </div>
-            <div class="box">
-                <div class="box-label">Regional Target</div>
-                <div class="box-val">{r_str}</div>
-                {r_gap}
-            </div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+    # HTML is completely compressed to prevent Streamlit from interpreting it as a Markdown code block
+    st.markdown(f"""<div class="pb-card {status_class}">
+<div class="evt-title"><span>{evt}</span>{badge_html}</div>
+<div class="grid">
+<div class="box"><div class="box-label">Current PB</div><div class="box-val time-pb">{pb_str}</div></div>
+<div class="box"><div class="box-label">County Target</div><div class="box-val">{c_str}</div>{c_gap}</div>
+<div class="box"><div class="box-label">Regional Target</div><div class="box-val">{r_str}</div>{r_gap}</div>
+</div></div>""", unsafe_allow_html=True)
