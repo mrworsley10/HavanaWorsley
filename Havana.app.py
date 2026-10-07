@@ -33,8 +33,14 @@ st.markdown("""
 
 # --- HELPER FUNCTIONS ---
 def extract_standard_event(event_str):
-    m = re.search(r'(\d+m\s+[A-Za-z]+(?:\s+IM)?)', str(event_str), re.IGNORECASE)
-    if m: return m.group(1).title().replace('Breaststroke', 'Breast').replace('Breaststrok', 'Breast').replace('Freestyle', 'Free').replace('Backstroke', 'Back').replace('Butterfly', 'Fly').replace('Ind. Medley', 'IM').replace('Ind Medley', 'IM').replace('M ', 'm ').replace(' Im', ' IM').strip()
+    # Pre-clean the text before regex to prevent chopping off "Medley"
+    e = str(event_str).title()
+    e = e.replace('Breaststroke', 'Breast').replace('Breaststrok', 'Breast')
+    e = e.replace('Freestyle', 'Free').replace('Backstroke', 'Back').replace('Butterfly', 'Fly')
+    e = e.replace('Individual Medley', 'IM').replace('Ind Medley', 'IM').replace('Ind. Medley', 'IM')
+    
+    m = re.search(r'(\d+[mM]\s+[A-Za-z]+)', e)
+    if m: return m.group(1).replace('M ', 'm ').strip()
     return ""
 
 def time_to_seconds(t_str):
@@ -56,12 +62,12 @@ def seconds_to_time(sec):
     return "N/A" if sec is None or sec < 0 else (f"{int(sec // 60)}:{sec % 60:05.2f}" if sec >= 60 else f"{sec % 60:05.2f}")
 
 # --- WEB SCRAPER FOR SWIM ENGLAND BIOGS SUMMARY TABLE ---
-@st.cache_data(ttl=3600) # Caches the data for 1 hour to keep it fast
+@st.cache_data(ttl=3600) 
 def scrape_swim_england_pbs(url):
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
     
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
     }
     
@@ -131,14 +137,28 @@ with col1:
 with col2:
     course_filter = st.selectbox("Pool Size", ["25m", "50m"])
 
-# Load Target Times
+# Load & Standardize Target Times
 try:
     target_df = pd.read_csv("target_times.csv")
-    target_df.rename(columns={"gender": "Gender", "age": "Age", "event": "Event", "county_time": "County_Time", "regional_time": "Regional_Time"}, inplace=True)
+    
+    # Clean up column names aggressively to prevent CSV header mismatches
+    target_df.columns = [str(c).strip().lower().replace(" ", "_") for c in target_df.columns]
+    
+    # Map any common variations of the target column names
+    col_map = {
+        "county": "county_time", "county_target": "county_time",
+        "regional": "regional_time", "regional_target": "regional_time"
+    }
+    target_df.rename(columns=col_map, inplace=True)
+    
+    # Standardize the Event names inside the CSV so they perfectly match the website!
+    if "event" in target_df.columns:
+        target_df["event"] = target_df["event"].apply(extract_standard_event)
+        
     has_targets = True
 except:
     has_targets = False
-    st.warning("⚠️ Could not find 'target_times.csv'. Please make sure it's uploaded to your Streamlit app.")
+    st.warning("⚠️ Could not find 'target_times.csv'. Please make sure it's uploaded.")
 
 # 2. Fetch and Display PBs
 with st.spinner("Fetching official times from Swim England..."):
@@ -167,12 +187,17 @@ for _, row in view_df.iterrows():
     status_badge = "Keep Pushing!"
     
     if has_targets:
-        match = target_df[(target_df["Gender"] == "F") & (target_df["Age"] == current_age) & (target_df["Event"].str.lower() == evt.lower())]
+        # Match using the now perfectly standardized CSV data
+        match = target_df[
+            (target_df["gender"].str.upper() == "F") & 
+            (target_df["age"] == current_age) & 
+            (target_df["event"].str.lower() == evt.lower())
+        ]
+        
         if not match.empty:
-            c_val = match.iloc[0].get("County_Time")
-            r_val = match.iloc[0].get("Regional_Time")
+            c_val = match.iloc[0].get("county_time")
+            r_val = match.iloc[0].get("regional_time")
             
-            # Clean up Pandas NaN values so they display as N/A
             c_str = str(c_val) if pd.notna(c_val) and str(c_val).lower() != "nan" else "N/A"
             r_str = str(r_val) if pd.notna(r_val) and str(r_val).lower() != "nan" else "N/A"
             
@@ -196,7 +221,6 @@ for _, row in view_df.iterrows():
     r_gap = get_gap_html(pb_sec, r_sec)
     badge_html = f"<span class='badge {'achieved' if status_class else ''}'>{status_badge}</span>"
 
-    # HTML is completely compressed to prevent Streamlit from interpreting it as a Markdown code block
     st.markdown(f"""<div class="pb-card {status_class}">
 <div class="evt-title"><span>{evt}</span>{badge_html}</div>
 <div class="grid">
