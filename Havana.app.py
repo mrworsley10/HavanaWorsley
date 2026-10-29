@@ -36,6 +36,7 @@ st.markdown("""
     .box-val.time-pb { color: #3b82f6; }
     .gap-green { color: #4ade80; font-size: 0.85rem; font-weight: bold; margin-top: 4px;}
     .gap-red { color: #f87171; font-size: 0.85rem; font-weight: bold; margin-top: 4px;}
+    .gap-note { color: #94a3b8; font-size: 0.75rem; margin-top: 4px; line-height: 1.2;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -175,6 +176,7 @@ for _, row in view_df.iterrows():
             c_str = str(c_val) if pd.notna(c_val) and str(c_val).lower() != "nan" else "N/A"
             r_str = str(r_val) if pd.notna(r_val) and str(r_val).lower() != "nan" else "N/A"
             c_sec, r_sec = time_to_seconds(c_str), time_to_seconds(r_str)
+            if course_filter == "25m": r_sec = None  # Regionals convert 25m times, so don't compare directly
             
             # Check qualifications
             if r_sec and pb_sec and pb_sec <= r_sec: status_class, status_badge = "qualified-regional", "🏆 REGIONAL QUALIFIER"
@@ -193,6 +195,7 @@ for _, row in view_df.iterrows():
         return f"<div class='gap-red'>Drop {seconds_to_time(diff)}</div>"
 
     c_gap, r_gap = get_gap_html(pb_sec, c_sec), get_gap_html(pb_sec, r_sec)
+    if course_filter == "25m" and r_str != "N/A": r_gap = "<div class='gap-note'>Converted for Regionals - see 50m view</div>"
     badge_html = f"<span class='badge {'achieved' if status_class else ''}'>{status_badge}</span>"
 
     card_html = f"""<div class="pb-card {status_class}">
