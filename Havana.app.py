@@ -32,6 +32,7 @@ st.markdown("""
     .badge { background: #0f172a; padding: 4px 10px; border-radius: 20px; font-size: 0.8rem; color: #94a3b8; font-weight: bold; }
     .badge.achieved { background: #166534; color: #4ade80; }
     .grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; text-align: center; margin-top: 10px;}
+    .grid.single { grid-template-columns: 1fr; }
     .box { background: #0f172a; padding: 10px; border-radius: 8px; }
     .box-label { font-size: 0.7rem; color: #64748b; text-transform: uppercase; font-weight: 700; margin-bottom: 4px;}
     .box-val { font-size: 1.2rem; font-weight: 900; color: #ffffff;}
@@ -139,6 +140,10 @@ header_slot = st.empty()  # filled in once the swimmer's name is known
 
 col0, colg = st.columns(2)
 with col0: swimmer_id = re.sub(r'\D', '', st.text_input("Swim England membership number", value=re.sub(r'\D', '', str(qp.get("id", DEFAULT_ID)))))
+# Which qualifying times to compare against (saved in the link as ?t=)
+TARGET_SETS = {"none": "None - PBs only", "cheshire": "Cheshire County + NW Regionals"}
+t_start = list(TARGET_SETS).index(qp.get("t")) if qp.get("t") in TARGET_SETS else 0
+target_key = {v: k for k, v in TARGET_SETS.items()}[st.selectbox("Targets", list(TARGET_SETS.values()), index=t_start)]
 col1, col2 = st.columns(2)
 
 pb_df, info, fetch_error = pd.DataFrame(), {}, None
@@ -160,7 +165,7 @@ with col1: current_age = st.number_input("Racing age (age on 31 Dec)", min_value
 with col2: course_filter = st.selectbox("Pool Size", ["25m", "50m"])
 
 # Keep the address bar up to date so it can be bookmarked as this swimmer's link
-st.query_params.update({"id": swimmer_id, "g": gender_code, "age": str(current_age)})
+st.query_params.update({"id": swimmer_id, "g": gender_code, "age": str(current_age), "t": target_key})
 
 def draw_header(name, club):
     first = html.escape(name.split()[0]) if name else ""
@@ -191,6 +196,7 @@ try:
 except:
     has_targets = False
     st.warning("⚠️ Could not find 'target_times.csv'. Please make sure it's uploaded.")
+if target_key == "none": has_targets = False  # PBs only
 
 if not swimmer_id:
     st.info("Enter a Swim England membership number to see their times.")
@@ -258,14 +264,14 @@ for _, row in view_df.iterrows():
 
     c_gap, r_gap = get_gap_html(pb_sec, c_sec), get_gap_html(pb_sec, r_sec)
     if course_filter == "25m" and r_str != "N/A": r_gap = "<div class='gap-note'>Converted for Regionals - see 50m view</div>"
-    badge_html = f"<span class='badge {'achieved' if status_class else ''}'>{status_badge}</span>"
+    badge_html = f"<span class='badge {'achieved' if status_class else ''}'>{status_badge}</span>" if has_targets else ""
+    target_boxes = (f"<div class='box'><div class='box-label'>County Target</div><div class='box-val'>{c_str}</div>{c_gap}</div>"
+                    f"<div class='box'><div class='box-label'>Regional Target</div><div class='box-val'>{r_str}</div>{r_gap}</div>") if has_targets else ""
 
     card_html = f"""<div class="pb-card {status_class}">
 <div class="evt-title"><span>{evt}</span>{badge_html}</div>
-<div class="grid">
-<div class="box"><div class="box-label">Current PB</div><div class="box-val time-pb">{pb_str}</div></div>
-<div class="box"><div class="box-label">County Target</div><div class="box-val">{c_str}</div>{c_gap}</div>
-<div class="box"><div class="box-label">Regional Target</div><div class="box-val">{r_str}</div>{r_gap}</div>
+<div class="grid{'' if has_targets else ' single'}">
+<div class="box"><div class="box-label">Current PB</div><div class="box-val time-pb">{pb_str}</div></div>{target_boxes}
 </div></div>"""
     dashboard_cards.append(card_html)
 
