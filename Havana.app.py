@@ -40,6 +40,9 @@ st.markdown("""
     .gap-green { color: #4ade80; font-size: 0.85rem; font-weight: bold; margin-top: 4px;}
     .gap-red { color: #f87171; font-size: 0.85rem; font-weight: bold; margin-top: 4px;}
     .gap-note { color: #94a3b8; font-size: 0.75rem; margin-top: 4px; line-height: 1.2;}
+    /* Expander heading: dark bar with light text (was white-on-white) */
+    [data-testid="stExpander"] details summary { background: #1e293b !important; color: #f8fafc !important; border-radius: 8px; }
+    [data-testid="stExpander"] details summary p, [data-testid="stExpander"] details summary span { color: #f8fafc !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -125,37 +128,41 @@ def scrape_swim_england_pbs(tiref):
         if sc_idx != -1: break
     return pd.DataFrame(all_swims), info
 
-class SearchRefused(Exception):
-    pass
+# --- SWIMMER DIRECTORY (our own list in Supabase) ---
+# Swim England's name search is behind Cloudflare bot protection, so the app can't use it.
+# Instead, every swimmer opened by membership number is remembered here (name, known-as,
+# club - all public on their Swim England biog), and "Search by name" searches this list.
+# Table: swimmer_directory (membership_no PK, name, known_as, club, updated_at), RLS on.
+# Needs SUPABASE_URL and SUPABASE_KEY (service_role) in Streamlit secrets; without them
+# the app still works, just without name search.
+@st.cache_resource
+def get_db():
+    try:
+        from supabase import create_client
+        return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
+    except Exception:
+        return None
 
-@st.cache_data(ttl=86400)
-def search_swimmers(surname):
-    # Swim England's own name search (Individual Best Times, "Membership Number or Family Name").
-    # Returns rows of: id, surname, first, known, yob, cat, club. "No match" comes back as HTTP 400.
-    headers = {'User-Agent': 'Mozilla/5.0', 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'}
-    resp = requests.get("https://www.swimmingresults.org/individualbest/personal_best.php",
-                        params={"mode": "A", "tiref": surname}, headers=headers, verify=False, timeout=20)
-    if resp.status_code == 400: return []
-    if resp.status_code != 200:
-        # Report exactly what Swim England sent back, so we can tell why it refused
-        title = BeautifulSoup(resp.text, 'html.parser').title
-        title = title.get_text(" ", strip=True)[:80] if title else "no title"
-        raise SearchRefused(f"{resp.status_code} {resp.reason} | server: {resp.headers.get('Server', '?')} | page: {title}")
-    soup = BeautifulSoup(resp.text, 'html.parser')
-    table = soup.find('table')
-    if not table: return []
-    rows = table.find_all('tr')
-    if not rows: return []
-    heads = [c.get_text(" ", strip=True).lower() for c in rows[0].find_all(['th', 'td'])]
-    want = {"member": "id", "family name": "surname", "given name": "first", "known as": "known", "yob": "yob", "eligibility category": "cat", "ranked club": "club"}
-    idx = {want[h]: i for i, h in enumerate(heads) if h in want}
-    if "id" not in idx or "surname" not in idx: return []
-    found = []
-    for tr in rows[1:]:
-        cells = [c.get_text(" ", strip=True) for c in tr.find_all(['td', 'th'])]
-        if len(cells) < len(heads) or not cells[idx["id"]].isdigit(): continue
-        found.append({k: cells[i] for k, i in idx.items()})
-    return found
+def remember_swimmer(tiref, info):
+    db = get_db()
+    if not db or not info.get("name"): return
+    try:
+        db.table("swimmer_directory").upsert({"membership_no": tiref, "name": info.get("name", ""),
+            "known_as": info.get("known_as", ""), "club": info.get("club", ""),
+            "updated_at": pd.Timestamp.now(tz="UTC").isoformat()}).execute()
+    except Exception:
+        pass  # never let the directory get in the way of showing PBs
+
+@st.cache_data(ttl=60)
+def find_swimmers(query):
+    db = get_db()
+    if not db: return None
+    words = [w for w in re.sub(r"[^A-Za-z' -]", " ", query).split() if len(w) >= 2][:4]
+    if not words: return []
+    q = db.table("swimmer_directory").select("membership_no,name,known_as,club")
+    for w in words:
+        q = q.ilike("name", f"%{w}%")
+    return q.order("name").limit(26).execute().data or []
 
 # --- APP UI & LOGIC ---
 
@@ -172,38 +179,32 @@ header_slot = st.empty()  # filled in once the swimmer's name is known
 
 col0, colg = st.columns(2)
 with col0: swimmer_id = re.sub(r'\D', '', st.text_input("Swim England membership number", value=re.sub(r'\D', '', str(qp.get("id", DEFAULT_ID)))))
-# Name search, for anyone who doesn't know the membership number
+# Name search over our own swimmer directory
 with st.expander("🔎 Don't know the membership number? Search by name", expanded=not swimmer_id):
-    s1, s2, s3 = st.columns(3)
-    with s1: q_surname = st.text_input("Surname").strip()
-    with s2: q_first = st.text_input("First name (optional)").strip().lower()
-    with s3: q_club = st.text_input("Club (optional)").strip().lower()
-    if len(q_surname) >= 2:
+    q_name = st.text_input("Swimmer's name", placeholder="e.g. Havana Worsley").strip()
+    if len(q_name) >= 2:
         try:
-            with st.spinner("Searching Swim England..."):
-                found = search_swimmers(q_surname.lower())
+            found = find_swimmers(q_name)
         except Exception as e:
             found = None
-            st.warning("Name search isn't working right now. Please use the membership number, or find it on Swim England.")
-            st.caption(f"Details: {type(e).__name__}: {e}"[:300])
-            st.link_button("Find my number on Swim England ↗", "https://www.swimmingresults.org/individualbest/")
-        if found is not None:
-            matches = [m for m in found
-                       if (not q_first or m.get("first", "").lower().startswith(q_first) or m.get("known", "").lower().startswith(q_first))
-                       and (not q_club or q_club in m.get("club", "").lower())]
-            if not matches:
-                st.info("No swimmers found with that name.")
-            elif len(matches) > 25:
-                st.info(f"{len(matches)} swimmers found - add a first name or club to narrow it down.")
-            else:
-                st.caption("Tap the right swimmer:")
-                for m in matches:
-                    label = f"{m.get('known') or m.get('first', '')} {m['surname']}"
-                    if m.get("yob"): label += f" ({m['yob']})"
-                    if m.get("club"): label += f" - {m['club']}"
-                    if st.button(label, key=f"pick_{m['id']}"):
-                        st.query_params["id"] = m["id"]
-                        st.rerun()
+            st.caption(f"Name search isn't working right now ({type(e).__name__}).")
+        if found is None:
+            st.info("Name search isn't available right now. Please enter the membership number.")
+        elif not found:
+            st.info("No one with that name yet. Swimmers appear here once their membership number "
+                    "has been entered in this app once - please enter it above.")
+            st.link_button("Find a membership number on Swim England ↗", "https://www.swimmingresults.org/individualbest/")
+        elif len(found) > 25:
+            st.info("Lots of matches - add more of the name (first name and surname).")
+        else:
+            st.caption("Tap the right swimmer:")
+            for m in found:
+                label = m.get("name", "")
+                if m.get("known_as") and m["known_as"].split()[0].lower() not in label.lower(): label += f" ({m['known_as']})"
+                if m.get("club"): label += f" - {m['club']}"
+                if st.button(label, key=f"pick_{m['membership_no']}"):
+                    st.query_params["id"] = m["membership_no"]
+                    st.rerun()
 
 # Which qualifying times to compare against (saved in the link as ?t=)
 TARGET_SETS = {"none": "None - PBs only", "cheshire": "Cheshire County + NW Regionals"}
@@ -274,6 +275,10 @@ if fetch_error:
 swimmer_name, swimmer_club = info.get("known_as") or info.get("name", ""), info.get("club", "")
 
 draw_header(swimmer_name, swimmer_club)
+
+if info.get("name") and st.session_state.get("remembered") != swimmer_id:
+    remember_swimmer(swimmer_id, info)
+    st.session_state["remembered"] = swimmer_id
 
 if pb_df.empty:
     if not swimmer_name:
