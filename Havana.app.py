@@ -49,6 +49,15 @@ st.markdown("""
     .stApp label, .stApp label p, [data-testid="stWidgetLabel"], [data-testid="stWidgetLabel"] p { color: #cbd5e1 !important; }
     [data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] p, .stCaption, .stCaption p { color: #94a3b8 !important; }
     .stApp input::placeholder { color: #64748b !important; opacity: 1; }
+    [data-testid="stCaptionContainer"] *, .stCaption * { color: #94a3b8 !important; }
+
+    /* Buttons (swimmer picker, Swim England link): always dark with light text.
+       In light mode Streamlit makes them white, and the page's light text vanished on them. */
+    .stButton > button, [data-testid^="stBaseButton"], .stLinkButton a, [data-testid="stLinkButton"] a {
+        background-color: #1e293b !important; color: #f8fafc !important; border: 1px solid #334155 !important; }
+    .stButton > button *, [data-testid^="stBaseButton"] *, .stLinkButton a *, [data-testid="stLinkButton"] a * { color: #f8fafc !important; }
+    .stButton > button:hover, [data-testid^="stBaseButton"]:hover, .stLinkButton a:hover, [data-testid="stLinkButton"] a:hover {
+        background-color: #334155 !important; border-color: #facc15 !important; }
 </style>
 """, unsafe_allow_html=True)
 
