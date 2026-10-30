@@ -126,7 +126,7 @@ def scrape_swim_england_pbs(tiref):
 
 # --- APP UI & LOGIC ---
 
-DEFAULT_ID = "1790307"  # Havana - used when the link has no ?id=
+DEFAULT_ID = ""  # no ?id= in the link: ask for a membership number
 
 # Personal link: ?id=<membership no>&g=F|M&age=<racing age>
 qp = st.query_params
