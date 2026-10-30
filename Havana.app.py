@@ -4,9 +4,10 @@ import requests
 from bs4 import BeautifulSoup
 import re
 import urllib3
+import html
 
 # --- PAGE SETUP ---
-st.set_page_config(page_title="Havana's PB Tracker", page_icon="🌟", layout="centered")
+st.set_page_config(page_title="Swim PB Tracker", page_icon="🌟", layout="centered")
 
 # --- CUSTOM CSS FOR A BEAUTIFUL MOBILE UI ---
 st.markdown("""
@@ -75,57 +76,75 @@ def seconds_to_time(sec):
     return "N/A" if sec is None or sec < 0 else (f"{int(sec // 60)}:{sec % 60:05.2f}" if sec >= 60 else f"{sec % 60:05.2f}")
 
 # --- WEB SCRAPER ---
-@st.cache_data(ttl=3600) 
-def scrape_swim_england_pbs(url):
+@st.cache_data(ttl=3600)
+def scrape_swim_england_pbs(tiref):
+    # Swim England "Individual Best Times (All Time)" page: one table per course.
+    # Network errors are raised (not cached) so the next load tries again.
+    url = f"https://www.swimmingresults.org/individualbest/personal_best.php?mode=A&tiref={tiref}"
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
     headers = {'User-Agent': 'Mozilla/5.0', 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'}
-    
-    try:
-        resp = requests.get(url, headers=headers, verify=False, timeout=15)
-        soup = BeautifulSoup(resp.text, 'html.parser')
-        
-        all_swims = []
-        for table in soup.find_all('table'):
-            sc_idx = lc_idx = -1
-            for tr in table.find_all('tr'):
-                cells = [td.get_text(strip=True) for td in tr.find_all(['td', 'th'])]
-                if not cells: continue
-                if sc_idx == -1:
-                    for i, c in enumerate(cells):
-                        if "short course pb" in c.lower(): sc_idx = i
-                        elif "long course pb" in c.lower(): lc_idx = i
-                    continue 
-                if sc_idx == -1 or lc_idx == -1: break
-                
-                event_name = cells[0]
-                if not re.search(r'\d+m\s+[A-Za-z]+', event_name, re.IGNORECASE): continue
-                clean_evt = extract_standard_event(event_name)
-                if not clean_evt: continue
-                
-                if len(cells) > max(sc_idx, lc_idx):
-                    sc_time, lc_time = cells[sc_idx], cells[lc_idx]
-                    if sc_time and sc_time != '.': all_swims.append({"Event": clean_evt, "Course": "25m", "Time": sc_time})
-                    if lc_time and lc_time != '.': all_swims.append({"Event": clean_evt, "Course": "50m", "Time": lc_time})
-            if sc_idx != -1: break
-        return pd.DataFrame(all_swims)
-    except Exception as e:
-        st.error(f"Failed to fetch PB times: {e}")
-        return pd.DataFrame()
+    resp = requests.get(url, headers=headers, verify=False, timeout=15)
+    resp.raise_for_status()
+    soup = BeautifulSoup(resp.text, 'html.parser')
+
+    # Name line looks like "Havana Worsley - (1790307) - Warrington Warriors SC"
+    name, club = "", ""
+    for p in soup.find_all('p'):
+        m = re.match(r'(.+?)\s*-\s*\(\s*\d+\s*\)\s*-?\s*(.*)$', p.get_text(" ", strip=True))
+        if m:
+            name, club = m.group(1).strip(), m.group(2).strip()
+            break
+
+    all_swims = []
+    for table in soup.find_all('table'):
+        rows = table.find_all('tr')
+        if not rows: continue
+        heads = [c.get_text(" ", strip=True).lower() for c in rows[0].find_all(['th', 'td'])]
+        if 'sc time' in heads: course, t_idx = "25m", heads.index('sc time')
+        elif 'lc time' in heads: course, t_idx = "50m", heads.index('lc time')
+        else: continue
+        for tr in rows[1:]:
+            cells = [td.get_text(strip=True) for td in tr.find_all(['td', 'th'])]
+            if len(cells) <= t_idx or not cells[t_idx]: continue
+            if not re.search(r'\d+\s*m?\s+[A-Za-z]+', cells[0]): continue
+            all_swims.append({"Event": extract_standard_event(cells[0]), "Course": course, "Time": cells[t_idx]})
+    return pd.DataFrame(all_swims), name, club
 
 # --- APP UI & LOGIC ---
 
-URL = "https://www.swimmingresults.org/biogs/biogs_details.php?tiref=1790307"
+DEFAULT_ID = "1790307"  # Havana - used when the link has no ?id=
 
-st.markdown("""
+# Personal link: ?id=<membership no>&g=F|M&age=<racing age>
+qp = st.query_params
+try: start_age = int(qp.get("age", "11"))
+except ValueError: start_age = 11
+if not 9 <= start_age <= 18: start_age = 11
+start_g = 1 if str(qp.get("g", "F")).upper() == "M" else 0
+
+header_slot = st.empty()  # filled in once the swimmer's name is known
+
+col0, colg = st.columns(2)
+with col0: swimmer_id = re.sub(r'\D', '', st.text_input("Swim England membership number", value=re.sub(r'\D', '', str(qp.get("id", DEFAULT_ID)))))
+with colg: gender_code = "M" if st.selectbox("Girl or boy (for targets)", ["Girl", "Boy"], index=start_g) == "Boy" else "F"
+col1, col2 = st.columns(2)
+with col1: current_age = st.number_input("Select Current Racing Age", min_value=9, max_value=18, value=start_age)
+with col2: course_filter = st.selectbox("Pool Size", ["25m", "50m"])
+
+# Keep the address bar up to date so it can be bookmarked as this swimmer's link
+st.query_params.update({"id": swimmer_id, "g": gender_code, "age": str(current_age)})
+
+def draw_header(name, club):
+    first = html.escape(name.split()[0]) if name else ""
+    title = f"🌟 {first}'s Dashboard" if first else "🌟 PB Dashboard"
+    sub = html.escape(club) if club else "Official PB Tracker & Targets"
+    header_slot.markdown(f"""
 <div class="header-box">
-    <div class="header-title">🌟 Havana's Dashboard</div>
-    <div class="header-sub">Official PB Tracker & Targets</div>
+    <div class="header-title">{title}</div>
+    <div class="header-sub">{sub}</div>
 </div>
 """, unsafe_allow_html=True)
 
-col1, col2 = st.columns(2)
-with col1: current_age = st.number_input("Select Current Racing Age", min_value=9, max_value=18, value=11)
-with col2: course_filter = st.selectbox("Pool Size", ["25m", "50m"])
+draw_header("", "")
 
 try:
     target_df = pd.read_csv("target_times.csv")
@@ -144,12 +163,27 @@ except:
     has_targets = False
     st.warning("⚠️ Could not find 'target_times.csv'. Please make sure it's uploaded.")
 
-with st.spinner("Fetching official times from Swim England..."):
-    pb_df = scrape_swim_england_pbs(URL)
+if not swimmer_id:
+    st.info("Enter a Swim England membership number to see their times.")
+    st.stop()
+
+try:
+    with st.spinner("Fetching official times from Swim England..."):
+        pb_df, swimmer_name, swimmer_club = scrape_swim_england_pbs(swimmer_id)
+except Exception:
+    st.error("Couldn't reach Swim England just now. Please try again in a minute.")
+    st.stop()
+
+draw_header(swimmer_name, swimmer_club)
 
 if pb_df.empty:
-    st.info("No personal best times found or the Swim England website is currently unavailable.")
+    if not swimmer_name:
+        st.info(f"No swimmer found with membership number {swimmer_id}. Please check the number.")
+    else:
+        st.info("No personal best times found for this swimmer yet.")
     st.stop()
+
+st.caption("💡 Bookmark this page (or add it to your home screen) - the link remembers this swimmer.")
 
 view_df = pb_df[pb_df["Course"] == course_filter].copy()
 
@@ -169,7 +203,7 @@ for _, row in view_df.iterrows():
     status_class, status_badge = "", "Keep Pushing!"
     
     if has_targets and "gender" in target_df.columns and "age" in target_df.columns and "event" in target_df.columns:
-        match = target_df[(target_df["gender"].str.upper() == "F") & (target_df["age"] == current_age) & (target_df["event"].str.lower() == evt.lower())]
+        match = target_df[(target_df["gender"].str.upper() == gender_code) & (target_df["age"] == current_age) & (target_df["event"].str.lower() == evt.lower())]
         
         if not match.empty:
             c_val, r_val = match.iloc[0].get("county_time"), match.iloc[0].get("regional_time")
