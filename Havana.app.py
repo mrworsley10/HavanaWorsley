@@ -43,6 +43,12 @@ st.markdown("""
     /* Expander heading: dark bar with light text (was white-on-white) */
     [data-testid="stExpander"] details summary { background: #1e293b !important; color: #f8fafc !important; border-radius: 8px; }
     [data-testid="stExpander"] details summary p, [data-testid="stExpander"] details summary span { color: #f8fafc !important; }
+
+    /* The page is always dark, whatever the phone's light/dark setting, so labels and
+       small print must always be light (Streamlit's light theme makes them dark grey) */
+    .stApp label, .stApp label p, [data-testid="stWidgetLabel"], [data-testid="stWidgetLabel"] p { color: #cbd5e1 !important; }
+    [data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] p, .stCaption, .stCaption p { color: #94a3b8 !important; }
+    .stApp input::placeholder { color: #64748b !important; opacity: 1; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -181,7 +187,7 @@ col0, colg = st.columns(2)
 with col0: swimmer_id = re.sub(r'\D', '', st.text_input("Swim England membership number", value=re.sub(r'\D', '', str(qp.get("id", DEFAULT_ID)))))
 # Name search over our own swimmer directory
 with st.expander("🔎 Don't know the membership number? Search by name", expanded=not swimmer_id):
-    q_name = st.text_input("Swimmer's name", placeholder="e.g. Havana Worsley").strip()
+    q_name = st.text_input("Swimmer's name", placeholder="First name and/or surname").strip()
     if len(q_name) >= 2:
         try:
             found = find_swimmers(q_name)
