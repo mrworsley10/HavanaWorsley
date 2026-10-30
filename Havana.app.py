@@ -5,6 +5,7 @@ from bs4 import BeautifulSoup
 import re
 import urllib3
 import html
+from datetime import date
 
 # --- PAGE SETUP ---
 st.set_page_config(page_title="Swim PB Tracker", page_icon="🌟", layout="centered")
@@ -78,37 +79,50 @@ def seconds_to_time(sec):
 # --- WEB SCRAPER ---
 @st.cache_data(ttl=3600)
 def scrape_swim_england_pbs(tiref):
-    # Swim England "Individual Best Times (All Time)" page: one table per course.
+    # Swim England biog page: personal details (name, year of birth, female/male, club)
+    # and one table with "Short Course PB" / "Long Course PB" columns.
     # Network errors are raised (not cached) so the next load tries again.
-    url = f"https://www.swimmingresults.org/individualbest/personal_best.php?mode=A&tiref={tiref}"
+    url = f"https://www.swimmingresults.org/biogs/biogs_details.php?tiref={tiref}"
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
     headers = {'User-Agent': 'Mozilla/5.0', 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'}
     resp = requests.get(url, headers=headers, verify=False, timeout=15)
     resp.raise_for_status()
     soup = BeautifulSoup(resp.text, 'html.parser')
 
-    # Name line looks like "Havana Worsley - (1790307) - Warrington Warriors SC"
-    name, club = "", ""
-    for p in soup.find_all('p'):
-        m = re.match(r'(.+?)\s*-\s*\(\s*\d+\s*\)\s*-?\s*(.*)$', p.get_text(" ", strip=True))
-        if m:
-            name, club = m.group(1).strip(), m.group(2).strip()
-            break
+    info = {}
+    labels = {"name": "name", "known as": "known_as", "year of birth": "yob", "eligibility category": "category", "ranked club": "club"}
+    for tr in soup.find_all('tr'):
+        tds = tr.find_all(['td', 'th'])
+        if len(tds) == 2:
+            key = labels.get(tds[0].get_text(" ", strip=True).lower())
+            if key and key not in info: info[key] = tds[1].get_text(" ", strip=True)
+    cat = info.get("category", "").lower()
+    info["gender"] = "F" if cat.startswith("female") else ("M" if cat.startswith("male") else "")
 
     all_swims = []
     for table in soup.find_all('table'):
-        rows = table.find_all('tr')
-        if not rows: continue
-        heads = [c.get_text(" ", strip=True).lower() for c in rows[0].find_all(['th', 'td'])]
-        if 'sc time' in heads: course, t_idx = "25m", heads.index('sc time')
-        elif 'lc time' in heads: course, t_idx = "50m", heads.index('lc time')
-        else: continue
-        for tr in rows[1:]:
+        sc_idx = lc_idx = -1
+        for tr in table.find_all('tr'):
             cells = [td.get_text(strip=True) for td in tr.find_all(['td', 'th'])]
-            if len(cells) <= t_idx or not cells[t_idx]: continue
-            if not re.search(r'\d+\s*m?\s+[A-Za-z]+', cells[0]): continue
-            all_swims.append({"Event": extract_standard_event(cells[0]), "Course": course, "Time": cells[t_idx]})
-    return pd.DataFrame(all_swims), name, club
+            if not cells: continue
+            if sc_idx == -1:
+                for i, c in enumerate(cells):
+                    if "short course pb" in c.lower(): sc_idx = i
+                    elif "long course pb" in c.lower(): lc_idx = i
+                continue
+            if sc_idx == -1 or lc_idx == -1: break
+
+            event_name = cells[0]
+            if not re.search(r'\d+m\s+[A-Za-z]+', event_name, re.IGNORECASE): continue
+            clean_evt = extract_standard_event(event_name)
+            if not clean_evt: continue
+
+            if len(cells) > max(sc_idx, lc_idx):
+                sc_time, lc_time = cells[sc_idx], cells[lc_idx]
+                if sc_time and sc_time != '.': all_swims.append({"Event": clean_evt, "Course": "25m", "Time": sc_time})
+                if lc_time and lc_time != '.': all_swims.append({"Event": clean_evt, "Course": "50m", "Time": lc_time})
+        if sc_idx != -1: break
+    return pd.DataFrame(all_swims), info
 
 # --- APP UI & LOGIC ---
 
@@ -125,9 +139,24 @@ header_slot = st.empty()  # filled in once the swimmer's name is known
 
 col0, colg = st.columns(2)
 with col0: swimmer_id = re.sub(r'\D', '', st.text_input("Swim England membership number", value=re.sub(r'\D', '', str(qp.get("id", DEFAULT_ID)))))
-with colg: gender_code = "M" if st.selectbox("Girl or boy (for targets)", ["Girl", "Boy"], index=start_g) == "Boy" else "F"
 col1, col2 = st.columns(2)
-with col1: current_age = st.number_input("Select Current Racing Age", min_value=9, max_value=18, value=start_age)
+
+pb_df, info, fetch_error = pd.DataFrame(), {}, None
+if swimmer_id:
+    try:
+        with st.spinner("Fetching official times from Swim England..."):
+            pb_df, info = scrape_swim_england_pbs(swimmer_id)
+    except Exception as e:
+        fetch_error = type(e).__name__
+
+# Girl/boy and age come from Swim England when the page shows them, otherwise from the link
+if info.get("gender"): start_g = 1 if info["gender"] == "M" else 0
+try: yob = int(info.get("yob", ""))
+except ValueError: yob = None
+if yob and 9 <= date.today().year - yob <= 18: start_age = date.today().year - yob  # age on 31 Dec this year
+
+with colg: gender_code = "M" if st.selectbox("Girl or boy (for targets)", ["Girl", "Boy"], index=start_g) == "Boy" else "F"
+with col1: current_age = st.number_input("Racing age (age on 31 Dec)", min_value=9, max_value=18, value=start_age)
 with col2: course_filter = st.selectbox("Pool Size", ["25m", "50m"])
 
 # Keep the address bar up to date so it can be bookmarked as this swimmer's link
@@ -167,12 +196,11 @@ if not swimmer_id:
     st.info("Enter a Swim England membership number to see their times.")
     st.stop()
 
-try:
-    with st.spinner("Fetching official times from Swim England..."):
-        pb_df, swimmer_name, swimmer_club = scrape_swim_england_pbs(swimmer_id)
-except Exception:
-    st.error("Couldn't reach Swim England just now. Please try again in a minute.")
+if fetch_error:
+    st.error(f"Couldn't reach Swim England just now ({fetch_error}). Please try again in a minute.")
     st.stop()
+
+swimmer_name, swimmer_club = info.get("known_as") or info.get("name", ""), info.get("club", "")
 
 draw_header(swimmer_name, swimmer_club)
 
